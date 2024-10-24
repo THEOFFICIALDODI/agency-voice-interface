@@ -23,6 +23,13 @@ print("Available Agencies and Agents:\n", agency_agents)  # Debug print
 class SendMessage(BaseTool):
     """
     A tool for sending a message to a specific agency and agent.
+    Use this tool to facilitate direct, synchronous communication between specialized agents within your agency.
+    When you send a message using this tool, you receive a response exclusively from the designated recipient agent.
+    To continue the dialogue, invoke this tool again with the desired recipient agent and your follow-up message.
+    Remember, communication here is synchronous; the recipient agent won't perform any tasks post-response.
+    You are responsible for relaying the recipient agent's responses back to the user, as the user does not have direct access to these replies.
+    Keep engaging with the tool for continuous interaction until the task is fully resolved.
+    Do not send more than 1 message at a time.
 
     Available Agencies and Agents:
     {agency_agents}
