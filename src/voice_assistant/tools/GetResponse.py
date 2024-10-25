@@ -1,8 +1,10 @@
 import asyncio
+from typing import Any, Optional
 
-from agency_swarm.agency import Agency
+from agency_swarm import Agency, get_openai_client
 from agency_swarm.tools import BaseTool
-from pydantic import Field, field_validator, model_validator
+from openai import OpenAI
+from pydantic import Field, PrivateAttr, field_validator
 
 from voice_assistant.agencies import AGENCIES, AGENCIES_AND_AGENTS_STRING
 from voice_assistant.utils.decorators import timeit_decorator
@@ -22,54 +24,122 @@ class GetResponse(BaseTool):
     """
 
     agency_name: str = Field(..., description="The name of the agency.")
-    agent_name: str | None = Field(
+    agent_name: Optional[str] = Field(
         None, description="The name of the agent, or None to use the default agent."
     )
+    _client: OpenAI = PrivateAttr()
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._client = get_openai_client()
 
     @field_validator("agency_name", mode="before")
-    def check_agency_name(cls, value):
+    def validate_agency_name(cls, value: str) -> str:
         if value not in AGENCIES:
+            available = ", ".join(AGENCIES.keys())
             raise ValueError(
-                f"Agency '{value}' not found. Available agencies: {', '.join(AGENCIES.keys())}"
+                f"Agency '{value}' not found. Available agencies: {available}"
             )
         return value
 
     @field_validator("agent_name", mode="before")
-    def check_agent_name(cls, value):
-        agencies = list(AGENCIES.values())
-        agent_names = [agent.name for agency in agencies for agent in agency.agents]
-        if value and value not in agent_names:
-            raise ValueError(
-                f"Agent '{value}' not found. Available agents: {', '.join(agent_names)}"
-            )
+    def validate_agent_name(cls, value: Optional[str]) -> Optional[str]:
+        if value:
+            agent_names = [
+                agent.name for agency in AGENCIES.values() for agent in agency.agents
+            ]
+            if value not in agent_names:
+                available = ", ".join(agent_names)
+                raise ValueError(
+                    f"Agent '{value}' not found. Available agents: {available}"
+                )
         return value
-
-    @model_validator(mode="after")
-    def check_agency_in_async_mode(self):
-        agency: Agency = AGENCIES.get(self.agency_name)
-        if agency.async_mode != "threading":
-            raise ValueError(
-                f"Agency '{self.agency_name}' is not in threading mode. This tool is only available in threading mode."
-            )
-        return self
 
     @timeit_decorator
     async def run(self) -> str:
+        """
+        Executes the GetResponse tool to check task status or retrieve agent response.
+
+        Returns:
+            str: The result message based on the task status.
+        """
         agency: Agency = AGENCIES.get(self.agency_name)
 
-        if self.agent_name is None or self.agent_name == agency.ceo.name:
+        # Determine the thread based on agent_name
+        if not self.agent_name or self.agent_name == agency.ceo.name:
             thread = agency.main_thread
         else:
             thread = agency.agents_and_threads.get(agency.ceo.name, {}).get(
                 self.agent_name
             )
 
-        if thread:
-            return thread.check_status()
-        else:
+        if not thread:
             return (
                 f"No thread found between '{agency.ceo.name}' and '{self.agent_name}'"
             )
+
+        run = await asyncio.to_thread(self._get_last_run, thread)
+
+        if not run:
+            return (
+                "System Notification: 'Agent is ready to receive a message. "
+                "Please send a message with the 'SendMessageAsync' tool.'"
+            )
+
+        if run.status in ["queued", "in_progress", "requires_action"]:
+            return (
+                "System Notification: 'Task is not completed yet. Please tell the user to wait "
+                "and try again later.'"
+            )
+
+        if run.status == "failed":
+            return (
+                f"System Notification: 'Agent run failed with error: {run.last_error.message}. "
+                "You may send another message with the 'SendMessageAsync' tool.'"
+            )
+
+        messages = await asyncio.to_thread(
+            self._client.beta.threads.messages.list, thread_id=thread.id, order="desc"
+        )
+
+        if messages.data and messages.data[0].content:
+            response_text = messages.data[0].content[0].text.value
+            return f"{self.agent_name}'s Response: '{response_text}'"
+        else:
+            return "System Notification: 'No response found from the agent.'"
+
+    def _get_last_run(self, thread) -> Optional[Any]:
+        """
+        Retrieves the most recent run of a thread.
+
+        Args:
+            thread: The thread object.
+
+        Returns:
+            The last run object if available, else None.
+        """
+        if not thread.id:
+            thread = self._init_thread(thread)
+
+        runs = self._client.beta.threads.runs.list(
+            thread_id=thread.id,
+            order="desc",
+        )
+        return runs.data[0] if runs.data else None
+
+    def _init_thread(self, thread) -> Any:
+        """
+        Initializes a thread if it does not have an ID.
+
+        Args:
+            thread: The thread object.
+
+        Returns:
+            The initialized thread object.
+        """
+        if thread.id:
+            return self._client.beta.threads.retrieve(thread.id)
+        return self._client.beta.threads.create()
 
 
 # Dynamically update the class docstring with the list of agencies and their agents
@@ -86,6 +156,7 @@ if __name__ == "__main__":
             agency_name="ResearchAgency",
             agent_name="BrowsingAgent",
         )
-        print(await tool.run())
+        response = await tool.run()
+        print(response)
 
     asyncio.run(main())

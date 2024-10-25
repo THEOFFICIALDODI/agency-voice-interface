@@ -1,7 +1,7 @@
 from agency_swarm import Agency
 
-from .AnalystAgent import AnalystAgent
-from .BrowsingAgent import BrowsingAgent
+from .AnalystAgent.AnalystAgent import AnalystAgent
+from .BrowsingAgent.BrowsingAgent import BrowsingAgent
 
 
 def create_agency():
