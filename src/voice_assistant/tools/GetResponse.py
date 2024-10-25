@@ -1,9 +1,8 @@
 import asyncio
-from typing import Optional
 
 from agency_swarm.agency import Agency
 from agency_swarm.tools import BaseTool
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from voice_assistant.agencies import AGENCIES, AGENCIES_AND_AGENTS_STRING
 from voice_assistant.utils.decorators import timeit_decorator
@@ -27,27 +26,38 @@ class GetResponse(BaseTool):
         None, description="The name of the agent, or None to use the default agent."
     )
 
-    @field_validator("agency_name")
+    @field_validator("agency_name", mode="before")
     def check_agency_name(cls, value):
         if value not in AGENCIES:
-            raise ValueError(f"Agency '{value}' not found")
-        return value
-
-    @field_validator("agent_name")
-    def check_agent_name(cls, value):
-        agent_names = [agent.name for agent in AGENCIES[cls.agency_name].agents]
-        if value and value not in agent_names:
             raise ValueError(
-                f"Agent '{value}' not found in agency '{cls.agency_name}'. "
-                f"Available agents: {', '.join(agent_names)}"
+                f"Agency '{value}' not found. Available agencies: {', '.join(AGENCIES.keys())}"
             )
         return value
+
+    @field_validator("agent_name", mode="before")
+    def check_agent_name(cls, value):
+        agencies = list(AGENCIES.values())
+        agent_names = [agent.name for agency in agencies for agent in agency.agents]
+        if value and value not in agent_names:
+            raise ValueError(
+                f"Agent '{value}' not found. Available agents: {', '.join(agent_names)}"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def check_agency_in_async_mode(self):
+        agency: Agency = AGENCIES.get(self.agency_name)
+        if agency.async_mode != "threading":
+            raise ValueError(
+                f"Agency '{self.agency_name}' is not in threading mode. This tool is only available in threading mode."
+            )
+        return self
 
     @timeit_decorator
     async def run(self) -> str:
         agency: Agency = AGENCIES.get(self.agency_name)
 
-        if self.agent_name is None:
+        if self.agent_name is None or self.agent_name == agency.ceo.name:
             thread = agency.main_thread
         else:
             thread = agency.agents_and_threads.get(agency.ceo.name, {}).get(
@@ -55,7 +65,7 @@ class GetResponse(BaseTool):
             )
 
         if thread:
-            return await thread.check_status()
+            return thread.check_status()
         else:
             return (
                 f"No thread found between '{agency.ceo.name}' and '{self.agent_name}'"
